@@ -1,7 +1,6 @@
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
-import { setupAuth } from "./auth";
 import type { WebRTCMessage } from "@shared/schema";
 import { log } from "./vite";
 
@@ -12,8 +11,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   const rooms = new Map<string, Set<WebSocket>>();
 
+  function heartbeat() {
+    this.isAlive = true;
+  }
+
+  const interval = setInterval(() => {
+    wss.clients.forEach((ws: any) => {
+      if (ws.isAlive === false) {
+        log('Terminating inactive client', 'websocket');
+        return ws.terminate();
+      }
+      ws.isAlive = false;
+      ws.ping();
+    });
+  }, 30000);
+
+  wss.on('close', () => {
+    clearInterval(interval);
+  });
+
   wss.on('connection', (ws, req) => {
     let currentRoom: string | null = null;
+    (ws as any).isAlive = true;
+
+    ws.on('pong', heartbeat);
 
     log(`WebSocket connected: ${req.url}`, 'websocket');
 
@@ -36,17 +57,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
             log(`Client joined room: ${roomId}`, 'websocket');
             break;
           }
-
-          case 'leave-room':
-            if (currentRoom && rooms.has(currentRoom)) {
-              rooms.get(currentRoom)!.delete(ws);
-              if (rooms.get(currentRoom)!.size === 0) {
-                rooms.delete(currentRoom);
-              }
-              log(`Client left room: ${currentRoom}`, 'websocket');
-            }
-            currentRoom = null;
-            break;
 
           case 'webrtc':
             if (currentRoom && rooms.has(currentRoom)) {
