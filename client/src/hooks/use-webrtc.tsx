@@ -16,7 +16,8 @@ export function useWebRTC(roomId: string) {
   const [isConnected, setIsConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
-  
+  const [isConnecting, setIsConnecting] = useState(false);
+
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const ws = useRef<WebSocket | null>(null);
   const { toast } = useToast();
@@ -24,73 +25,121 @@ export function useWebRTC(roomId: string) {
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws`;
-    ws.current = new WebSocket(wsUrl);
 
-    ws.current.onopen = () => {
-      ws.current?.send(JSON.stringify({ type: "join-room", roomId }));
-    };
+    function connect() {
+      if (isConnecting) return;
+      setIsConnecting(true);
 
-    ws.current.onmessage = async (event) => {
-      const message: WebRTCMessage = JSON.parse(event.data);
-      
-      if (!peerConnection.current) {
-        peerConnection.current = new RTCPeerConnection(config);
-        
-        peerConnection.current.onicecandidate = (event) => {
-          if (event.candidate) {
-            ws.current?.send(
-              JSON.stringify({
-                type: "webrtc",
-                data: {
-                  type: "ice-candidate",
-                  from: roomId,
-                  to: "all",
-                  payload: event.candidate,
-                },
-              })
-            );
+      ws.current = new WebSocket(wsUrl);
+
+      ws.current.onopen = () => {
+        setIsConnecting(false);
+        ws.current?.send(JSON.stringify({ type: "join-room", roomId }));
+      };
+
+      ws.current.onclose = () => {
+        setIsConnected(false);
+        setIsConnecting(false);
+        toast({
+          title: "Connection lost",
+          description: "Attempting to reconnect...",
+          variant: "destructive",
+        });
+        setTimeout(connect, 5000);
+      };
+
+      ws.current.onerror = (error) => {
+        console.error("WebSocket error:", error);
+        toast({
+          title: "Connection error",
+          description: "Failed to connect to video call server",
+          variant: "destructive",
+        });
+      };
+
+      ws.current.onmessage = async (event) => {
+        try {
+          const message: WebRTCMessage = JSON.parse(event.data);
+
+          if (!peerConnection.current) {
+            peerConnection.current = new RTCPeerConnection(config);
+
+            peerConnection.current.onicecandidate = (event) => {
+              if (event.candidate) {
+                ws.current?.send(
+                  JSON.stringify({
+                    type: "webrtc",
+                    data: {
+                      type: "ice-candidate",
+                      from: roomId,
+                      to: "all",
+                      payload: event.candidate,
+                    },
+                  })
+                );
+              }
+            };
+
+            peerConnection.current.ontrack = (event) => {
+              setRemoteStream(event.streams[0]);
+              setIsConnected(true);
+            };
+
+            peerConnection.current.onconnectionstatechange = () => {
+              if (peerConnection.current?.connectionState === "failed") {
+                toast({
+                  title: "Connection failed",
+                  description: "Failed to connect to peer",
+                  variant: "destructive",
+                });
+              }
+            };
+
+            if (localStream) {
+              localStream.getTracks().forEach((track) => {
+                peerConnection.current?.addTrack(track, localStream);
+              });
+            }
           }
-        };
 
-        peerConnection.current.ontrack = (event) => {
-          setRemoteStream(event.streams[0]);
-          setIsConnected(true);
-        };
+          switch (message.type) {
+            case "offer":
+              await peerConnection.current.setRemoteDescription(message.payload);
+              const answer = await peerConnection.current.createAnswer();
+              await peerConnection.current.setLocalDescription(answer);
+              ws.current?.send(
+                JSON.stringify({
+                  type: "webrtc",
+                  data: {
+                    type: "answer",
+                    from: roomId,
+                    to: message.from,
+                    payload: answer,
+                  },
+                })
+              );
+              break;
 
-        if (localStream) {
-          localStream.getTracks().forEach((track) => {
-            peerConnection.current?.addTrack(track, localStream);
+            case "answer":
+              await peerConnection.current.setRemoteDescription(message.payload);
+              break;
+
+            case "ice-candidate":
+              await peerConnection.current.addIceCandidate(message.payload);
+              break;
+          }
+        } catch (error) {
+          console.error("WebRTC error:", error);
+          toast({
+            title: "Video call error",
+            description: "An error occurred during the call",
+            variant: "destructive",
           });
         }
-      }
+      };
+    }
 
-      switch (message.type) {
-        case "offer":
-          await peerConnection.current.setRemoteDescription(message.payload);
-          const answer = await peerConnection.current.createAnswer();
-          await peerConnection.current.setLocalDescription(answer);
-          ws.current?.send(
-            JSON.stringify({
-              type: "webrtc",
-              data: {
-                type: "answer",
-                from: roomId,
-                to: message.from,
-                payload: answer,
-              },
-            })
-          );
-          break;
-
-        case "answer":
-          await peerConnection.current.setRemoteDescription(message.payload);
-          break;
-
-        case "ice-candidate":
-          await peerConnection.current.addIceCandidate(message.payload);
-          break;
-      }
-    };
+    connect();
 
     return () => {
       if (ws.current) {
