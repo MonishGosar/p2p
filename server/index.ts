@@ -14,9 +14,12 @@ const httpServer = http.createServer(app);
 // Create WebSocket server
 const wss = new WebSocketServer({ server: httpServer });
 
-// WebSocket connection handling
+// Update the WebSocket connection handling
+const rooms = new Map();
+
 wss.on('connection', (ws) => {
   console.log('Client connected to signaling server');
+  let clientRoomId = null;
   
   // Send a welcome message
   ws.send(JSON.stringify({ type: 'welcome', message: 'Connected to signaling server' }));
@@ -27,12 +30,38 @@ wss.on('connection', (ws) => {
       const data = JSON.parse(message.toString());
       console.log('Received message:', data);
       
-      // Broadcast to all other clients (for signaling)
-      wss.clients.forEach((client) => {
-        if (client !== ws && client.readyState === WebSocket.OPEN) {
-          client.send(JSON.stringify(data));
-        }
-      });
+      // Handle different message types
+      switch(data.type) {
+        case 'join':
+          clientRoomId = data.roomId;
+          if (!rooms.has(clientRoomId)) {
+            rooms.set(clientRoomId, new Set());
+          }
+          rooms.get(clientRoomId).add(ws);
+          console.log(`Client joined room: ${clientRoomId}`);
+          break;
+          
+        case 'offer':
+        case 'answer':
+        case 'ice-candidate':
+          // Forward to all clients in the same room
+          if (clientRoomId && rooms.has(clientRoomId)) {
+            rooms.get(clientRoomId).forEach((client) => {
+              if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify(data));
+              }
+            });
+          }
+          break;
+          
+        case 'ping':
+          // Just a keep-alive, send pong
+          ws.send(JSON.stringify({ type: 'pong' }));
+          break;
+          
+        default:
+          console.log('Unknown message type:', data.type);
+      }
     } catch (error) {
       console.error('Error processing message:', error);
     }
@@ -41,6 +70,13 @@ wss.on('connection', (ws) => {
   // Handle disconnection
   ws.on('close', () => {
     console.log('Client disconnected from signaling server');
+    // Remove from rooms
+    if (clientRoomId && rooms.has(clientRoomId)) {
+      rooms.get(clientRoomId).delete(ws);
+      if (rooms.get(clientRoomId).size === 0) {
+        rooms.delete(clientRoomId);
+      }
+    }
   });
 });
 
