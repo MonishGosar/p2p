@@ -22,7 +22,7 @@ import { useForm } from "react-hook-form";
 import { z } from "zod";
 import { insertUserSchema } from "@shared/schema";
 import { Redirect } from "wouter";
-import { Video } from "lucide-react";
+import { Waves } from "lucide-react";
 
 const loginSchema = insertUserSchema.pick({ username: true, password: true });
 
@@ -56,11 +56,11 @@ export default function AuthPage() {
         <Card className="w-full max-w-md">
           <CardHeader className="space-y-1">
             <CardTitle className="text-2xl flex items-center gap-2">
-              <Video className="h-6 w-6" />
-              Peer Video Call
+              <Waves className="h-6 w-6 text-primary animate-pulse" />
+              Peer
             </CardTitle>
             <CardDescription>
-              Sign in to start or join video calls
+              Connect instantly through video calls
             </CardDescription>
           </CardHeader>
           <CardContent>
@@ -69,7 +69,7 @@ export default function AuthPage() {
                 <TabsTrigger value="login">Login</TabsTrigger>
                 <TabsTrigger value="register">Register</TabsTrigger>
               </TabsList>
-              
+
               <TabsContent value="login">
                 <Form {...loginForm}>
                   <form
@@ -178,7 +178,7 @@ export default function AuthPage() {
       </div>
       <div className="hidden lg:flex flex-1 bg-slate-50 items-center justify-center p-8">
         <div className="max-w-md space-y-4">
-          <h2 className="text-3xl font-bold">Welcome to Peer Video Call</h2>
+          <h2 className="text-3xl font-bold">Welcome to Peer</h2>
           <p className="text-slate-600">
             Connect with others through high-quality video calls. Create or join
             rooms to start conversations instantly.
