@@ -3,15 +3,7 @@ import { useToast } from "./use-toast";
 import type { WebRTCMessage } from "@shared/schema";
 
 const config = {
-  iceServers: [
-    {
-      urls: [
-        "stun:stun.l.google.com:19302",
-        "stun:stun1.l.google.com:19302",
-        "stun:stun2.l.google.com:19302",
-      ],
-    },
-  ],
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
 };
 
 export function useWebRTC(roomId: string) {
@@ -20,228 +12,208 @@ export function useWebRTC(roomId: string) {
   const [isConnected, setIsConnected] = useState(false);
   const [isMuted, setIsMuted] = useState(false);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
-  const [isConnecting, setIsConnecting] = useState(false);
 
   const peerConnection = useRef<RTCPeerConnection | null>(null);
   const ws = useRef<WebSocket | null>(null);
-  const reconnectTimeout = useRef<NodeJS.Timeout>();
-  const reconnectAttempts = useRef(0);
   const { toast } = useToast();
 
-  // Setup media stream first before WebSocket connection
+  // Step 1: Setup WebSocket connection
   useEffect(() => {
-    let mounted = true;
+    if (!roomId) return;
 
-    async function setupMedia() {
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = `${wsProtocol}//${window.location.host}/rtc-signal`;
+
+    console.log("Connecting to signaling server...");
+    ws.current = new WebSocket(wsUrl);
+
+    ws.current.onopen = () => {
+      console.log("WebSocket connected");
+      // Start media access after WebSocket is connected
+      getMedia();
+    };
+
+    ws.current.onclose = () => {
+      console.log("WebSocket disconnected");
+      setIsConnected(false);
+      toast({
+        title: "Connection lost",
+        description: "Lost connection to signaling server",
+        variant: "destructive",
+      });
+    };
+
+    ws.current.onerror = (error) => {
+      console.error("WebSocket error:", error);
+    };
+
+    ws.current.onmessage = async (event) => {
       try {
-        // Check if we're in a secure context (HTTPS or localhost)
-        if (!window.isSecureContext) {
-          throw new Error("Video calls require a secure connection (HTTPS or localhost)");
-        }
+        const message = JSON.parse(event.data);
+        console.log("Received message:", message.type);
 
-        // Check if getUserMedia is supported
-        if (!navigator.mediaDevices?.getUserMedia) {
-          throw new Error("Your browser doesn't support video calls");
-        }
-
-        // Check permissions
-        const permissions = await Promise.all([
-          navigator.permissions.query({ name: 'camera' as PermissionName }),
-          navigator.permissions.query({ name: 'microphone' as PermissionName })
-        ]);
-
-        if (permissions.some(p => p.state === 'denied')) {
-          throw new Error("Camera or microphone access was denied");
-        }
-
-        // Get media stream
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 }
-          },
-          audio: true
-        });
-
-        if (mounted) {
-          setLocalStream(stream);
-          setIsMuted(false);
-          setIsVideoEnabled(true);
-        }
-
-      } catch (error: any) {
-        console.error("Media Error:", error);
-        let message = "Could not access camera or microphone. ";
-
-        switch(error.name) {
-          case 'NotFoundError':
-            message += "No camera or microphone found.";
+        switch (message.type) {
+          case 'connected':
+            console.log("Connected to signaling server");
+            ws.current?.send(JSON.stringify({ type: "join-room", roomId }));
             break;
-          case 'NotAllowedError':
-            message += "Please allow camera and microphone access when prompted.";
+
+          case 'room-joined':
+            console.log(`Joined room: ${message.roomId} with ${message.peers} peers`);
             break;
-          case 'OverconstrainedError':
-            message += "Your camera doesn't meet the required quality settings.";
+
+          case 'peer-left':
+            setRemoteStream(null);
+            setIsConnected(false);
             break;
+
           default:
-            message += error.message || "Please check your device settings.";
+            if (message.type === 'webrtc') {
+              handleWebRTCMessage(message);
+            }
         }
-
-        toast({
-          title: "Camera/Microphone Error",
-          description: message,
-          variant: "destructive",
-        });
-      }
-    }
-
-    setupMedia();
-
-    return () => {
-      mounted = false;
-      if (localStream) {
-        localStream.getTracks().forEach(track => track.stop());
+      } catch (error) {
+        console.error("Failed to process message:", error);
       }
     };
-  }, []);
-
-  // Setup WebSocket connection only after we have local media
-  useEffect(() => {
-    if (!roomId || !localStream) return;
-
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
-
-    function connect() {
-      if (isConnecting || ws.current?.readyState === WebSocket.CONNECTING) return;
-
-      setIsConnecting(true);
-      console.log("Connecting to WebSocket...");
-
-      ws.current = new WebSocket(wsUrl);
-
-      ws.current.onopen = () => {
-        console.log("WebSocket connected, joining room:", roomId);
-        setIsConnecting(false);
-        reconnectAttempts.current = 0;
-        ws.current?.send(JSON.stringify({ type: "join-room", roomId }));
-
-        // Create RTCPeerConnection after successful WebSocket connection
-        peerConnection.current = new RTCPeerConnection(config);
-
-        peerConnection.current.onicecandidate = (event) => {
-          if (event.candidate && ws.current?.readyState === WebSocket.OPEN) {
-            ws.current.send(
-              JSON.stringify({
-                type: "webrtc",
-                data: {
-                  type: "ice-candidate",
-                  from: roomId,
-                  to: "all",
-                  payload: event.candidate,
-                },
-              })
-            );
-          }
-        };
-
-        peerConnection.current.ontrack = (event) => {
-          console.log("Received remote track");
-          setRemoteStream(event.streams[0]);
-          setIsConnected(true);
-        };
-
-        // Add local tracks to peer connection
-        localStream.getTracks().forEach((track) => {
-          peerConnection.current?.addTrack(track, localStream);
-        });
-      };
-
-      ws.current.onclose = () => {
-        console.log("WebSocket closed");
-        setIsConnected(false);
-        setIsConnecting(false);
-
-        // Clear any existing reconnection timeout
-        if (reconnectTimeout.current) {
-          clearTimeout(reconnectTimeout.current);
-        }
-
-        // Attempt to reconnect with exponential backoff
-        if (reconnectAttempts.current < 5) {
-          const timeout = Math.min(1000 * Math.pow(2, reconnectAttempts.current), 10000);
-          reconnectAttempts.current++;
-
-          toast({
-            title: "Connection lost",
-            description: `Attempting to reconnect in ${timeout/1000} seconds...`,
-          });
-
-          reconnectTimeout.current = setTimeout(connect, timeout);
-        } else {
-          toast({
-            title: "Connection failed",
-            description: "Could not establish connection after multiple attempts. Please try again later.",
-            variant: "destructive",
-          });
-        }
-      };
-
-      ws.current.onmessage = async (event) => {
-        try {
-          const message: WebRTCMessage = JSON.parse(event.data);
-
-          switch (message.type) {
-            case "offer":
-              console.log("Received offer");
-              await peerConnection.current?.setRemoteDescription(message.payload);
-              const answer = await peerConnection.current?.createAnswer();
-              await peerConnection.current?.setLocalDescription(answer);
-              ws.current?.send(
-                JSON.stringify({
-                  type: "webrtc",
-                  data: {
-                    type: "answer",
-                    from: roomId,
-                    to: message.from,
-                    payload: answer,
-                  },
-                })
-              );
-              break;
-
-            case "answer":
-              console.log("Received answer");
-              await peerConnection.current?.setRemoteDescription(message.payload);
-              break;
-
-            case "ice-candidate":
-              console.log("Received ICE candidate");
-              if (peerConnection.current?.remoteDescription) {
-                await peerConnection.current.addIceCandidate(message.payload);
-              }
-              break;
-          }
-        } catch (error) {
-          console.error("WebRTC message handling error:", error);
-        }
-      };
-    }
-
-    connect();
 
     return () => {
-      if (reconnectTimeout.current) {
-        clearTimeout(reconnectTimeout.current);
-      }
-      if (ws.current) {
-        ws.current.close();
-      }
-      if (peerConnection.current) {
-        peerConnection.current.close();
+      ws.current?.close();
+      cleanupWebRTC();
+    };
+  }, [roomId]);
+
+  // Step 2: Get user media
+  async function getMedia() {
+    try {
+      console.log("Requesting media access...");
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: true,
+        audio: true,
+      });
+
+      console.log("Media access granted");
+      setLocalStream(stream);
+      setupWebRTC(stream);
+    } catch (error: any) {
+      console.error("Media Error:", error);
+      toast({
+        title: "Camera/Microphone Error",
+        description: error.name === "NotAllowedError"
+          ? "Please allow camera and microphone access when prompted"
+          : "Could not access camera or microphone",
+        variant: "destructive",
+      });
+    }
+  }
+
+  // Step 3: Setup WebRTC
+  function setupWebRTC(stream: MediaStream) {
+    console.log("Setting up WebRTC connection");
+    const pc = new RTCPeerConnection(config);
+    peerConnection.current = pc;
+
+    // Add local tracks
+    stream.getTracks().forEach(track => {
+      console.log(`Adding ${track.kind} track to peer connection`);
+      pc.addTrack(track, stream);
+    });
+
+    // Handle remote tracks
+    pc.ontrack = (event) => {
+      console.log("Received remote track");
+      setRemoteStream(event.streams[0]);
+      setIsConnected(true);
+    };
+
+    // Send ICE candidates
+    pc.onicecandidate = ({ candidate }) => {
+      if (candidate && ws.current?.readyState === WebSocket.OPEN) {
+        console.log("Sending ICE candidate");
+        ws.current.send(JSON.stringify({
+          type: "webrtc",
+          data: {
+            type: "ice-candidate",
+            from: roomId,
+            to: "all",
+            payload: candidate,
+          },
+        }));
       }
     };
-  }, [roomId, localStream]); // Only connect WebSocket after we have local stream
+
+    // Create offer when connection is established
+    pc.onnegotiationneeded = async () => {
+      try {
+        console.log("Creating offer");
+        const offer = await pc.createOffer();
+        await pc.setLocalDescription(offer);
+
+        ws.current?.send(JSON.stringify({
+          type: "webrtc",
+          data: {
+            type: "offer",
+            from: roomId,
+            to: "all",
+            payload: offer,
+          },
+        }));
+      } catch (error) {
+        console.error("Error creating offer:", error);
+      }
+    };
+  }
+
+  // Handle incoming WebRTC messages
+  async function handleWebRTCMessage(message: any) {
+    if (!peerConnection.current) return;
+
+    try {
+      const { type, payload } = message.data;
+      console.log("Handling WebRTC message:", type);
+
+      switch (type) {
+        case "offer":
+          await peerConnection.current.setRemoteDescription(payload);
+          const answer = await peerConnection.current.createAnswer();
+          await peerConnection.current.setLocalDescription(answer);
+
+          ws.current?.send(JSON.stringify({
+            type: "webrtc",
+            data: {
+              type: "answer",
+              from: roomId,
+              to: message.data.from,
+              payload: answer,
+            },
+          }));
+          break;
+
+        case "answer":
+          await peerConnection.current.setRemoteDescription(payload);
+          break;
+
+        case "ice-candidate":
+          await peerConnection.current.addIceCandidate(payload);
+          break;
+      }
+    } catch (error) {
+      console.error("WebRTC message handling error:", error);
+    }
+  }
+
+  function cleanupWebRTC() {
+    if (peerConnection.current) {
+      peerConnection.current.close();
+      peerConnection.current = null;
+    }
+    if (localStream) {
+      localStream.getTracks().forEach(track => track.stop());
+    }
+    setLocalStream(null);
+    setRemoteStream(null);
+    setIsConnected(false);
+  }
 
   const toggleMute = () => {
     if (localStream) {

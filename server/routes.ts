@@ -6,75 +6,75 @@ import { log } from "./vite";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   const httpServer = createServer(app);
-
-  const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
-
+  // Use a different path to avoid conflicts with Vite
+  const wss = new WebSocketServer({ server: httpServer, path: '/rtc-signal' });
   const rooms = new Map<string, Set<WebSocket>>();
-
-  function heartbeat() {
-    this.isAlive = true;
-  }
-
-  const interval = setInterval(() => {
-    wss.clients.forEach((ws: any) => {
-      if (ws.isAlive === false) {
-        log('Terminating inactive client', 'websocket');
-        return ws.terminate();
-      }
-      ws.isAlive = false;
-      ws.ping();
-    });
-  }, 30000);
-
-  wss.on('close', () => {
-    clearInterval(interval);
-  });
 
   wss.on('connection', (ws, req) => {
     let currentRoom: string | null = null;
-    (ws as any).isAlive = true;
 
-    ws.on('pong', heartbeat);
+    log(`WebSocket connected from ${req.headers.origin}`, 'websocket');
 
-    log(`WebSocket connected: ${req.url}`, 'websocket');
+    // Send initial connection acknowledgment
+    ws.send(JSON.stringify({ type: 'connected' }));
 
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data.toString());
+        log(`Received message type: ${message.type}`, 'websocket');
 
         switch (message.type) {
           case 'join-room': {
             const roomId = message.roomId;
-            if (typeof roomId !== 'string') {
-              throw new Error('Invalid room ID');
+            log(`Client joining room: ${roomId}`, 'websocket');
+
+            // Leave current room if in one
+            if (currentRoom && rooms.has(currentRoom)) {
+              rooms.get(currentRoom)!.delete(ws);
             }
 
+            // Join new room
             currentRoom = roomId;
-            if (!rooms.has(currentRoom)) {
-              rooms.set(currentRoom, new Set());
+            if (!rooms.has(roomId)) {
+              rooms.set(roomId, new Set());
             }
-            rooms.get(currentRoom)!.add(ws);
-            log(`Client joined room: ${roomId}`, 'websocket');
+            rooms.get(roomId)!.add(ws);
+
+            // Notify client about successful room join
+            ws.send(JSON.stringify({ 
+              type: 'room-joined',
+              roomId,
+              peers: rooms.get(roomId)!.size
+            }));
+
+            log(`Client joined room: ${roomId} (${rooms.get(roomId)!.size} peers)`, 'websocket');
             break;
           }
 
-          case 'webrtc':
-            if (currentRoom && rooms.has(currentRoom)) {
-              const rtcMessage = message.data as WebRTCMessage;
-              rooms.get(currentRoom)!.forEach((peer) => {
-                if (peer !== ws && peer.readyState === WebSocket.OPEN) {
-                  peer.send(JSON.stringify(rtcMessage));
-                }
-              });
+          case 'webrtc': {
+            if (!currentRoom) {
+              log('Received WebRTC message but client is not in a room', 'websocket');
+              return;
             }
-            break;
 
-          default:
-            log(`Unknown message type: ${message.type}`, 'websocket');
+            const rtcMessage = message.data as WebRTCMessage;
+            log(`Relaying ${rtcMessage.type} message in room ${currentRoom}`, 'websocket');
+
+            // Relay message to all other clients in the room
+            rooms.get(currentRoom)!.forEach((client) => {
+              if (client !== ws && client.readyState === WebSocket.OPEN) {
+                client.send(JSON.stringify(rtcMessage));
+              }
+            });
+            break;
+          }
         }
       } catch (error) {
-        log(`WebSocket error: ${error}`, 'websocket');
-        ws.send(JSON.stringify({ type: 'error', message: 'Invalid message format' }));
+        log(`WebSocket message error: ${error}`, 'websocket');
+        ws.send(JSON.stringify({ 
+          type: 'error',
+          message: 'Failed to process message'
+        }));
       }
     });
 
@@ -85,10 +85,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     ws.on('close', () => {
       if (currentRoom && rooms.has(currentRoom)) {
         rooms.get(currentRoom)!.delete(ws);
+        log(`Client left room: ${currentRoom}`, 'websocket');
+
+        // Notify remaining peers about departure
+        rooms.get(currentRoom)!.forEach((client) => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(JSON.stringify({ 
+              type: 'peer-left',
+              roomId: currentRoom
+            }));
+          }
+        });
+
+        // Clean up empty rooms
         if (rooms.get(currentRoom)!.size === 0) {
           rooms.delete(currentRoom);
+          log(`Room ${currentRoom} deleted (empty)`, 'websocket');
         }
-        log(`Client disconnected from room: ${currentRoom}`, 'websocket');
       }
     });
   });
