@@ -1,10 +1,27 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
+import http from "http";
 
 const app = express();
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Create HTTP server explicitly
+const httpServer = http.createServer(app);
+
+// Add CORS headers for WebRTC signaling
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Origin, X-Requested-With, Content-Type, Accept');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  next();
+});
 
 app.use((req, res, next) => {
   const start = Date.now();
@@ -55,8 +72,17 @@ app.use((req, res, next) => {
   // Get port from environment variable or use default
   const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
-  // Change from localhost to 0.0.0.0 to listen on all interfaces
-  const serverListening = app.listen(port, '0.0.0.0', () => {
+  // Use the HTTP server instead of app.listen
+  httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Server listening on http://0.0.0.0:${port}`);
+    console.log(`WebRTC signaling server active`);
+  });
+
+  // Add graceful shutdown
+  process.on('SIGTERM', () => {
+    console.log('SIGTERM signal received: closing HTTP server');
+    httpServer.close(() => {
+      console.log('HTTP server closed');
+    });
   });
 })();
