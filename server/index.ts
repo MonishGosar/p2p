@@ -52,8 +52,11 @@ app.use((req, res, next) => {
     serveStatic(app);
   }
 
-  const PORT = 5000;
-  server.listen(PORT, '127.0.0.1', () => {
-    log(`serving on port ${PORT}`);
+  // Get port from environment variable or use default
+  const port = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
+
+  // Change from localhost to 0.0.0.0 to listen on all interfaces
+  const serverListening = app.listen(port, '0.0.0.0', () => {
+    console.log(`Server listening on http://0.0.0.0:${port}`);
   });
 })();
