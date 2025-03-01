@@ -2,6 +2,7 @@ import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { setupVite, serveStatic, log } from "./vite";
 import http from "http";
+import { WebSocketServer } from 'ws';
 
 const app = express();
 app.use(express.json());
@@ -9,6 +10,39 @@ app.use(express.urlencoded({ extended: false }));
 
 // Create HTTP server explicitly
 const httpServer = http.createServer(app);
+
+// Create WebSocket server
+const wss = new WebSocketServer({ server: httpServer });
+
+// WebSocket connection handling
+wss.on('connection', (ws) => {
+  console.log('Client connected to signaling server');
+  
+  // Send a welcome message
+  ws.send(JSON.stringify({ type: 'welcome', message: 'Connected to signaling server' }));
+  
+  // Handle messages from clients
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message.toString());
+      console.log('Received message:', data);
+      
+      // Broadcast to all other clients (for signaling)
+      wss.clients.forEach((client) => {
+        if (client !== ws && client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(data));
+        }
+      });
+    } catch (error) {
+      console.error('Error processing message:', error);
+    }
+  });
+  
+  // Handle disconnection
+  ws.on('close', () => {
+    console.log('Client disconnected from signaling server');
+  });
+});
 
 // Add CORS headers for WebRTC signaling
 app.use((req, res, next) => {
@@ -75,7 +109,7 @@ app.use((req, res, next) => {
   // Use the HTTP server instead of app.listen
   httpServer.listen(port, '0.0.0.0', () => {
     console.log(`Server listening on http://0.0.0.0:${port}`);
-    console.log(`WebRTC signaling server active`);
+    console.log(`WebRTC signaling server active on ws://0.0.0.0:${port}`);
   });
 
   // Add graceful shutdown

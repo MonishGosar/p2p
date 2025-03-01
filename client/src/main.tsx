@@ -5,18 +5,32 @@ import "./index.css";
 let signalingConnection;
 let reconnectAttempts = 0;
 const maxReconnectAttempts = 5;
+let keepAliveInterval;
 
 function connectToSignalingServer() {
-  // Replace with your actual connection logic
-  signalingConnection = new WebSocket('wss://your-server-url');
+  // Use the current host with secure WebSocket protocol
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const host = window.location.host;
+  const wsUrl = `${protocol}//${host}`;
+  
+  console.log(`Connecting to signaling server at ${wsUrl}`);
+  signalingConnection = new WebSocket(wsUrl);
   
   signalingConnection.onopen = () => {
     console.log('Connected to signaling server');
     reconnectAttempts = 0;
+    
+    // Set up keep-alive ping every 30 seconds
+    keepAliveInterval = setInterval(() => {
+      if (signalingConnection.readyState === WebSocket.OPEN) {
+        signalingConnection.send(JSON.stringify({ type: 'ping' }));
+      }
+    }, 30000);
   };
   
   signalingConnection.onclose = () => {
     console.log('Disconnected from signaling server');
+    clearInterval(keepAliveInterval);
     attemptReconnect();
   };
   
