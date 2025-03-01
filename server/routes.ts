@@ -6,7 +6,6 @@ import type { WebRTCMessage } from "@shared/schema";
 import { log } from "./vite";
 
 export async function registerRoutes(app: Express): Promise<Server> {
-  setupAuth(app);
   const httpServer = createServer(app);
 
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
@@ -16,7 +15,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
   wss.on('connection', (ws, req) => {
     let currentRoom: string | null = null;
 
-    // Log connection
     log(`WebSocket connected: ${req.url}`, 'websocket');
 
     ws.on('message', (data) => {

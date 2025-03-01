@@ -6,12 +6,11 @@ import { ControlBar } from "@/components/video-call/control-bar";
 import { useWebRTC } from "@/hooks/use-webrtc";
 import { nanoid } from "nanoid";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { useAuth } from "@/hooks/use-auth";
+import { Waves } from "lucide-react";
 
 export default function HomePage() {
   const [roomId, setRoomId] = useState("");
   const [isInCall, setIsInCall] = useState(false);
-  const { user, logoutMutation } = useAuth();
   const webrtc = useWebRTC(roomId);
 
   const handleJoinRoom = (event: React.FormEvent) => {
@@ -51,7 +50,10 @@ export default function HomePage() {
     <div className="min-h-screen flex items-center justify-center bg-slate-50 p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <CardTitle>Welcome, {user?.displayName}</CardTitle>
+          <CardTitle className="flex items-center gap-2">
+            <Waves className="h-6 w-6 text-primary animate-pulse" />
+            <span>Peer</span>
+          </CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <form onSubmit={handleJoinRoom} className="space-y-4">
@@ -69,13 +71,6 @@ export default function HomePage() {
               </Button>
             </div>
           </form>
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => logoutMutation.mutate()}
-          >
-            Logout
-          </Button>
         </CardContent>
       </Card>
     </div>
